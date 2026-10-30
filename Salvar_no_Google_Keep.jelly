@@ -1,0 +1,8 @@
+// Atalho Jellycuts: Salvar no Google Keep
+import Shortcuts
+#color: yellow, #icon: sticky-note
+
+var nota = AskForInput(prompt: "O que você deseja anotar no Google Keep?", type: Text, allowsMultiline: true)
+SetClipboard(variable: nota)
+Share(input: nota)
+ShowNotification(title: "Google Keep", body: "Texto copiado e compartilhado no Google Keep!")
