@@ -1,0 +1,60 @@
+name: Sign Apple Shortcuts
+
+on:
+  push:
+    paths:
+      - 'shortcuts-to-sign/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sign Shortcuts via macOS CLI
+        run: |
+          mkdir -p signed
+          count=0
+          for file in shortcuts-to-sign/*.shortcut; do
+            if [ -f "$file" ]; then
+              base=$(basename "$file")
+              echo "==> Signing $file -> signed/$base"
+              shortcuts sign --mode anyone --input "$file" --output "signed/$base"
+              count=$((count + 1))
+            fi
+          done
+          echo "Total shortcuts signed: $count"
+
+      - name: Inspect and Verify AEA1 Header
+        run: |
+          for file in signed/*.shortcut; do
+            if [ -f "$file" ]; then
+              echo "Header for $file:"
+              head -c 4 "$file" && echo ""
+            fi
+          done
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-shortcuts
+          path: signed/
+
+      - name: Publish or Update Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if gh release view latest > /dev/null 2>&1; then
+            echo "Updating existing release 'latest'..."
+            gh release upload latest signed/* --clobber
+          else
+            echo "Creating release 'latest'..."
+            gh release create latest signed/* --title "Signed Apple Shortcuts" --notes "Shortcuts assinados via macOS runner para importação no iOS"
+          fi
