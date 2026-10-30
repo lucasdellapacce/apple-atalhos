@@ -103,7 +103,8 @@ def main():
             sync_and_publish(out)
     elif args.shortcut:
         dest = SHORTCUTS_DIR / args.shortcut.name
-        shutil.copy2(args.shortcut, dest)
+        if args.shortcut.resolve() != dest.resolve():
+            shutil.copy2(args.shortcut, dest)
         validate_shortcut(dest)
         sync_and_publish(dest)
     else:

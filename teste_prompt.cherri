@@ -1,0 +1,6 @@
+#define name Salvar no Google Keep
+#define color yellow
+
+const nota = prompt("O que você deseja anotar no Google Keep?")
+setClipboard(nota)
+share(nota)
