@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
 Apple Shortcuts E2E Factory & Sync Manager
-Gerador, Validador, Sincronizador com Google Drive e Link Direto no GitHub.
+Gerador, Validador, Assinador Remoto (AEA1), Sincronizador com Google Drive e Link Direto no GitHub.
 """
 import argparse
-import hashlib
+import base64
 import json
 import os
 import plistlib
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
+import urllib.request
 
 WORKSPACE = Path(__file__).resolve().parent.parent
 CHERRI_BIN = Path(r"C:\Users\lucas\.gemini\config\skills\apple-shortcuts-master\tools\cherri.exe")
@@ -26,31 +28,54 @@ def ensure_environment():
     except Exception as e:
         print(f"[Aviso] Nao foi possivel criar pasta no Google Drive: {e}")
 
-def compile_cherri(source_file: Path, output_file: Path) -> bool:
-    print(f"[*] Compilando Cherri: {source_file} -> {output_file}...")
-    cmd = [
-        str(CHERRI_BIN),
-        str(source_file),
-        "-o", str(output_file),
-        "--skip-sign"
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"[Erro] Falha na compilacao Cherri:\n{res.stderr}\n{res.stdout}")
-        return False
-    print("[OK] Compilacao concluida.")
-    return True
+def sign_shortcut(source_path: Path, signed_path: Path) -> bool:
+    print(f"[*] Assinando criptograficamente ({source_path.name}) via motor oficial AEA...")
+    url = "https://sign.shortcuty.app/api/v1/sign?response=json"
+    file_bytes = source_path.read_bytes()
+    filename = source_path.name
 
-def validate_shortcut(shortcut_path: Path) -> bool:
-    print(f"[*] Validando estrutura de {shortcut_path.name}...")
+    boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode())
+    body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
+    body.extend(file_bytes)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode())
+
+    headers = {
+        "User-Agent": "Shortcuts/3107.0.8.2 CFNetwork/1498.700.2 Darwin/23.6.0",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Accept": "application/json"
+    }
+
+    req = urllib.request.Request(url, data=bytes(body), headers=headers, method="POST")
     try:
-        data = shortcut_path.read_bytes()
-        plist = plistlib.loads(data)
-        actions = plist.get("WFWorkflowActions", [])
-        print(f"[OK] Valido! Contem {len(actions)} acoes.")
-        return True
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            res_json = json.loads(resp.read().decode('utf-8'))
+            if "error" in res_json:
+                print(f"[Erro] Falha na assinatura: {res_json['error']}")
+                return False
+            
+            b64_content = None
+            if "file" in res_json and "content_base64" in res_json["file"]:
+                b64_content = res_json["file"]["content_base64"]
+            elif "content_base64" in res_json:
+                b64_content = res_json["content_base64"]
+
+            if not b64_content:
+                print(f"[Erro] Resposta invalida.")
+                return False
+
+            signed_bytes = base64.b64decode(b64_content)
+            if not signed_bytes.startswith(b'AEA1'):
+                print(f"[Aviso] O arquivo assinado nao possui o header AEA1.")
+            
+            signed_path.write_bytes(signed_bytes)
+            print(f"[SUCESSO] Assinatura digital concluida: {len(signed_bytes)} bytes (AEA1)")
+            return True
     except Exception as e:
-        print(f"[Erro] Estrutura invalida: {e}")
+        print(f"[Erro] Requisicao de assinatura falhou: {e}")
         return False
 
 def sync_and_publish(shortcut_path: Path):
@@ -70,7 +95,7 @@ def sync_and_publish(shortcut_path: Path):
         subprocess.run(["git", "add", "."], cwd=str(WORKSPACE), check=True)
         status = subprocess.run(["git", "status", "--porcelain"], cwd=str(WORKSPACE), capture_output=True, text=True)
         if status.stdout.strip():
-            subprocess.run(["git", "commit", "-m", f"feat(shortcut): adicionar {name}"], cwd=str(WORKSPACE), check=True)
+            subprocess.run(["git", "commit", "-m", f"feat(shortcut): atualizar/adicionar {name} assinado"], cwd=str(WORKSPACE), check=True)
             subprocess.run(["git", "push", "origin", "main"], cwd=str(WORKSPACE), check=True)
             print("[OK] Sincronizado com GitHub com sucesso.")
     except Exception as e:
@@ -79,7 +104,7 @@ def sync_and_publish(shortcut_path: Path):
     # 3. Exibir Links de Download
     raw_url = f"{REPO_RAW_BASE}/{name}"
     print("\n" + "="*60)
-    print(f"  ATALHO PRONTO PARA IMPORTAR NO SEU IPHONE!")
+    print(f"  ATALHO ASSINADO PRONTO PARA IMPORTAR NO SEU IPHONE!")
     print(f"  Nome: {name}")
     print(f"  Link Direto (Safari): {raw_url}")
     print(f"  Google Drive: {gdrive_dest}")
@@ -88,25 +113,18 @@ def sync_and_publish(shortcut_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="Apple Shortcuts Factory")
-    parser.add_argument("--cherri", type=Path, help="Compilar fonte Cherri")
-    parser.add_argument("--shortcut", type=Path, help="Processar arquivo .shortcut existente")
-    parser.add_argument("--name", type=str, help="Nome do atalho de saida")
+    parser.add_argument("--shortcut", type=Path, help="Processar e assinar arquivo .shortcut existente")
     args = parser.parse_args()
 
     ensure_environment()
 
-    if args.cherri:
-        name = args.name or args.cherri.stem
-        out = SHORTCUTS_DIR / f"{name}.shortcut"
-        if compile_cherri(args.cherri, out):
-            validate_shortcut(out)
-            sync_and_publish(out)
-    elif args.shortcut:
-        dest = SHORTCUTS_DIR / args.shortcut.name
-        if args.shortcut.resolve() != dest.resolve():
-            shutil.copy2(args.shortcut, dest)
-        validate_shortcut(dest)
-        sync_and_publish(dest)
+    if args.shortcut:
+        base_name = args.shortcut.stem.replace("_Assinado", "")
+        signed_file = SHORTCUTS_DIR / f"{base_name}.shortcut"
+        
+        # Assinar
+        if sign_shortcut(args.shortcut, signed_file):
+            sync_and_publish(signed_file)
     else:
         parser.print_help()
 
